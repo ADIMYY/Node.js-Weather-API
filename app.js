@@ -24,7 +24,22 @@ const PORT = process.env.PORT || 4000;
 // Utility functions
 const formatters = {
     windSpeed: (speedInMS) => (speedInMS * 3.6).toFixed(1),
-    percentage: (value) => parseFloat(value).toFixed(1)
+    percentage: (value) => parseFloat(value).toFixed(1),
+    time: (isoString) => {
+        if (!isoString) return null;
+        try {
+            const date = new Date(isoString);
+            if (isNaN(date.getTime())) return null;
+            return date.toLocaleTimeString('en-US', { 
+                hour: '2-digit', 
+                minute: '2-digit',
+                hour12: true 
+            });
+        } catch (error) {
+            console.error('Error formatting time:', error);
+            return null;
+        }
+    }
 };
 
 // API client
@@ -40,21 +55,38 @@ const weatherClient = {
                 location: `${TOMORROW_API_CONFIG.LOCATION.LAT},${TOMORROW_API_CONFIG.LOCATION.LON}`,
                 apikey: TOMORROW_API_CONFIG.API_KEY,
                 units: 'metric',
+                timesteps: 'daily',  // Changed from minutely to daily to get sunrise/sunset
+                fields: ['temperature', 'windSpeed', 'humidity', 'precipitationProbability', 'sunriseTime', 'sunsetTime']
+            },
+            headers: this.headers
+        });
+
+        const currentData = response.data.timelines.daily[0]?.values;
+        if (!currentData) {
+            throw new Error('Current weather data not found in response');
+        }
+
+        // Get current conditions from minutely data
+        const currentMinutely = await axios.get(TOMORROW_API_CONFIG.BASE_URL, {
+            params: {
+                location: `${TOMORROW_API_CONFIG.LOCATION.LAT},${TOMORROW_API_CONFIG.LOCATION.LON}`,
+                apikey: TOMORROW_API_CONFIG.API_KEY,
+                units: 'metric',
+                timesteps: 'minutely',
                 fields: ['temperature', 'windSpeed', 'humidity', 'precipitationProbability']
             },
             headers: this.headers
         });
 
-        const currentData = response.data.timelines.minutely[0]?.values;
-        if (!currentData) {
-            throw new Error('Current weather data not found in response');
-        }
+        const minutelyData = currentMinutely.data.timelines.minutely[0]?.values;
 
         return {
-            temperature: currentData.temperature,
-            windSpeed: formatters.windSpeed(currentData.windSpeed),
-            humidity: formatters.percentage(currentData.humidity),
-            rainChance: formatters.percentage(currentData.precipitationProbability)
+            temperature: minutelyData.temperature,
+            windSpeed: formatters.windSpeed(minutelyData.windSpeed),
+            humidity: formatters.percentage(minutelyData.humidity),
+            rainChance: formatters.percentage(minutelyData.precipitationProbability),
+            sunrise: formatters.time(currentData.sunriseTime),
+            sunset: formatters.time(currentData.sunsetTime)
         };
     },
 
@@ -67,7 +99,7 @@ const weatherClient = {
                 timesteps: '1d',
                 startTime: 'now',
                 endTime: 'nowPlus7d',
-                fields: ['temperature', 'weatherCode']
+                fields: ['temperature', 'weatherCode', 'sunriseTime', 'sunsetTime']
             },
             headers: this.headers
         });
@@ -82,7 +114,9 @@ const weatherClient = {
                     max: day.values.temperatureMax,
                     min: day.values.temperatureMin
                 },
-                weatherCode: day.values.weatherCodeMax
+                weatherCode: day.values.weatherCodeMax,
+                sunrise: formatters.time(day.values.sunriseTime),
+                sunset: formatters.time(day.values.sunsetTime),
             };
         });
     }

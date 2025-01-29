@@ -4,54 +4,120 @@ import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { join, dirname } from 'path';
 
+// Configuration
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-
 dotenv.config({ path: join(__dirname, 'config.env') });
 
-const app = express();
-const apiKey = process.env.API_KEY;
-
-app.use(express.json());
-
-
-const convertTemperature = (temp, unit = 'F') => {
-    switch(unit.toUpperCase()) {
-        case 'C':
-            return ((temp - 32) * 5/9).toFixed(1);
-        case 'K':
-            return ((temp - 32) * 5/9 + 273.15).toFixed(1);
-        case 'F':
-        default:
-            return temp.toFixed(1);
+// Constants
+const TOMORROW_API_CONFIG = {
+    BASE_URL: process.env.BASE_URL,
+    API_KEY: process.env.TOMORROW_API_KEY,
+    LOCATION: {
+        LAT: '21.422510',
+        LON: '39.826168'
     }
 };
 
+const PORT = process.env.PORT || 4000;
 
+// Utility functions
+const formatters = {
+    windSpeed: (speedInMS) => (speedInMS * 3.6).toFixed(1),
+    percentage: (value) => parseFloat(value).toFixed(1)
+};
+
+// API client
+const weatherClient = {
+    headers: {
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Accept': 'application/json'
+    },
+
+    async getCurrentWeather() {
+        const response = await axios.get(TOMORROW_API_CONFIG.BASE_URL, {
+            params: {
+                location: `${TOMORROW_API_CONFIG.LOCATION.LAT},${TOMORROW_API_CONFIG.LOCATION.LON}`,
+                apikey: TOMORROW_API_CONFIG.API_KEY,
+                units: 'metric',
+                fields: ['temperature', 'windSpeed', 'humidity', 'precipitationProbability']
+            },
+            headers: this.headers
+        });
+
+        const currentData = response.data.timelines.minutely[0]?.values;
+        if (!currentData) {
+            throw new Error('Current weather data not found in response');
+        }
+
+        return {
+            temperature: currentData.temperature,
+            windSpeed: formatters.windSpeed(currentData.windSpeed),
+            humidity: formatters.percentage(currentData.humidity),
+            rainChance: formatters.percentage(currentData.precipitationProbability)
+        };
+    },
+
+    async getWeatherForecast() {
+        const response = await axios.get(TOMORROW_API_CONFIG.BASE_URL, {
+            params: {
+                location: `${TOMORROW_API_CONFIG.LOCATION.LAT},${TOMORROW_API_CONFIG.LOCATION.LON}`,
+                apikey: TOMORROW_API_CONFIG.API_KEY,
+                units: 'metric',
+                timesteps: '1d',
+                startTime: 'now',
+                endTime: 'nowPlus7d',
+                fields: ['temperature', 'weatherCode']
+            },
+            headers: this.headers
+        });
+
+        return response.data.timelines.daily.map(day => {
+            const date = new Date(day.time);
+            return {
+                dayName: date.toLocaleDateString('en-US', { weekday: 'long' }),
+                date: date.toLocaleDateString(),
+                temperature: {
+                    avg: day.values.temperatureAvg,
+                    max: day.values.temperatureMax,
+                    min: day.values.temperatureMin
+                },
+                weatherCode: day.values.weatherCodeMax
+            };
+        });
+    }
+};
+
+// Express app setup
+const app = express();
+app.use(express.json());
+
+// Routes
 app.get('/', async (req, res) => {
-    const {city, unit = 'C' } = req.body;
-    const url = process.env.URL.replace('<CITY>', city).replace('<APIKEY>', apiKey);
-
     try {
-        const response = await axios.get(url);
-        const weather = response.data;
+        const [current, dailyTemperatures] = await Promise.all([
+            weatherClient.getCurrentWeather(),
+            weatherClient.getWeatherForecast()
+        ]);
 
-
-        const temp = convertTemperature(weather.main.temp, unit);
-        const weatherText = `It's ${temp}° ${unit} in ${weather.name}!`;
-        
-        res.status(200).json({ 
-            temp: temp, 
-            unit: unit,
-            city: weather.name,
-            fullResponse: weatherText 
+        res.status(200).json({
+            location: {
+                lat: TOMORROW_API_CONFIG.LOCATION.LAT,
+                lon: TOMORROW_API_CONFIG.LOCATION.LON
+            },
+            current,
+            dailyTemperatures
         });
     } catch (error) {
-        console.log('Weather API Error', error);
-        res.status(500).json({ msg: 'Provide a valide city name' });
+        console.error('Weather API Error:', error.response?.data || error.message);
+        res.status(500).json({
+            error: 'Failed to fetch weather data',
+            details: error.response?.data || error.message
+        });
     }
 });
 
-app.listen(4000, () => {
-    console.log('listening on port 4000!');
+// Start server
+app.listen(PORT, () => {
+    console.log(`Server is listening on port ${PORT}!`);
 });
